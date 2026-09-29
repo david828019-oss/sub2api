@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "codex.native.relay",
+  "name": "Codex Native Relay",
+  "version": "0.1.0",
+  "description": "把 OpenAI OAuth 账号的 Codex Responses 请求转发给本机 `codex relay`，由 Codex CLI 的原生客户端、原生请求头和原生登录发往上游。",
+  "author": "david828019-oss",
+  "requires": {
+    "sub2api": ">=0.2.9 <0.3.0",
+    "recommended_sub2api_version": "0.2.9",
+    "tested_sub2api_versions": ["0.2.9"],
+    "plugin_protocol": 1,
+    "transport_api": 1,
+    "ui_bridge": 1
+  },
+  "capabilities": [
+    {
+      "id": "openai.oauth.outbound_transport.v1",
+      "platform": "openai",
+      "account_type": "oauth"
+    }
+  ],
+  "runtimes": {},
+  "ui": { "entrypoint": "ui/index.html" },
+  "files": {}
+}
