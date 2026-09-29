@@ -44,21 +44,51 @@ func codexRequest(body string) Request {
 	}
 }
 
-func TestIsCodexResponses(t *testing.T) {
+func TestIsRelayed(t *testing.T) {
 	cases := map[string]bool{
-		"https://chatgpt.com/backend-api/codex/responses":         true,
-		"https://chatgpt.com/backend-api/codex/responses/compact": true,
-		"https://ab.chatgpt.com/backend-api/codex/responses":      true,
-		"https://chatgpt.com/backend-api/codex/models":            false,
-		"https://chatgpt.com/backend-api/files":                   false,
-		"https://api.openai.com/v1/responses":                     false,
-		"https://evilchatgpt.com/backend-api/codex/responses":     false,
+		"https://chatgpt.com/backend-api/codex/responses":               true,
+		"https://chatgpt.com/backend-api/codex/responses/compact":       true,
+		"https://ab.chatgpt.com/backend-api/codex/responses":            true,
+		"https://chatgpt.com/backend-api/codex/models?client_version=1": true,
+		"https://chatgpt.com/backend-api/codex/images/generations":      true,
+		"https://chatgpt.com/backend-api/codex/images/edits":            true,
+		"https://chatgpt.com/backend-api/files":                         true,
+		"https://chatgpt.com/backend-api/files/file_1/download":         true,
+		"https://chatgpt.com/backend-api/filesystem":                    false,
+		"https://chatgpt.com/backend-api/codex/alpha/search":            false,
+		"https://chatgpt.com/backend-api/wham/usage":                    false,
+		"https://api.openai.com/v1/responses":                           false,
+		"https://evilchatgpt.com/backend-api/codex/responses":           false,
 	}
 	for raw, want := range cases {
 		parsed, _ := url.Parse(raw)
-		if got := IsCodexResponses(parsed); got != want {
-			t.Errorf("IsCodexResponses(%s) = %v, want %v", raw, got, want)
+		if got := IsRelayed(parsed); got != want {
+			t.Errorf("IsRelayed(%s) = %v, want %v", raw, got, want)
 		}
+	}
+}
+
+func TestRelayKeepsMethodAndQuery(t *testing.T) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/backend-api/codex/models" || r.URL.RawQuery != "client_version=0.130.0" {
+			t.Errorf("relay got %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+		_, _ = io.WriteString(w, `{"models":[]}`)
+	}))
+	defer relay.Close()
+	transport := configured(t, relay.URL, pluginconfig.CredentialModeCodex)
+
+	response, err := transport.RoundTrip(context.Background(), Request{
+		Method:  http.MethodGet,
+		URL:     "https://chatgpt.com/backend-api/codex/models?client_version=0.130.0",
+		Headers: http.Header{"Authorization": []string{"Bearer account-token"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", response.StatusCode)
 	}
 }
 

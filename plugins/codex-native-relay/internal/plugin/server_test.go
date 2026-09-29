@@ -92,7 +92,8 @@ func TestGetInfoMatchesManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	if info.GetPluginId() != ID || info.GetProtocolVersion() != pluginv1.ProtocolVersion ||
-		info.GetTransportApiVersion() != pluginv1.TransportAPIVersion || len(info.GetCapabilities()) != 1 {
+		info.GetTransportApiVersion() != pluginv1.TransportAPIVersion ||
+		strings.Join(info.GetCapabilities(), ",") != capability+","+pluginv1.OpenAIOAuthWebSocketCapability {
 		t.Fatalf("unexpected info %+v", info)
 	}
 }

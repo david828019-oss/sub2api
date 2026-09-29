@@ -16,6 +16,13 @@ service TransportPlugin {
   // lifecycle hook: plugins built against an older contract leave it
   // Unimplemented and the host simply runs without offering host services.
   rpc InitHostServices(InitHostServicesRequest) returns (InitHostServicesResponse);
+  // ForwardWebSocket carries one outbound WebSocket (e.g. Codex Responses over
+  // WebSocket) through the plugin. It is optional: the host only calls it when
+  // GetInfo lists the OpenAIOAuthWebSocketCapability, and otherwise keeps routing
+  // plugin-bound accounts over HTTP. The first client frame is `open`; the
+  // plugin answers with `opened` or `rejected` (or `error`), after which both
+  // sides exchange `message` frames until either sends `close` or ends the stream.
+  rpc ForwardWebSocket(stream WebSocketClientFrame) returns (stream WebSocketServerFrame);
 }
 
 // HostService is implemented by the host and dialed by the plugin over the
@@ -147,6 +154,62 @@ message ForwardResponse {
     bytes body_chunk = 2;
     ForwardResponseEnd end = 3;
     ForwardResponseError error = 4;
+  }
+}
+
+message WebSocketOpen {
+  string request_id = 1;
+  // url is the upstream ws:// or wss:// URL the host would have dialed.
+  string url = 2;
+  map<string, HeaderValues> headers = 3;
+  string proxy_url = 4;
+  int64 account_id = 5;
+  int32 account_concurrency = 6;
+  string platform = 7;
+  string account_type = 8;
+}
+
+message WebSocketOpened {
+  // status_code is the upgrade status (normally 101).
+  int32 status_code = 1;
+  // headers are the upstream handshake response headers.
+  map<string, HeaderValues> headers = 2;
+}
+
+// WebSocketRejected reports an upstream that answered the upgrade with a
+// regular HTTP response (e.g. 401 or 429).
+message WebSocketRejected {
+  int32 status_code = 1;
+  map<string, HeaderValues> headers = 2;
+  bytes body = 3;
+}
+
+message WebSocketMessage {
+  bool binary = 1;
+  bytes payload = 2;
+}
+
+message WebSocketClose {
+  int32 code = 1;
+  string reason = 2;
+}
+
+message WebSocketClientFrame {
+  oneof frame {
+    WebSocketOpen open = 1;
+    WebSocketMessage message = 2;
+    WebSocketClose close = 3;
+  }
+}
+
+message WebSocketServerFrame {
+  oneof frame {
+    WebSocketOpened opened = 1;
+    WebSocketRejected rejected = 2;
+    WebSocketMessage message = 3;
+    WebSocketClose close = 4;
+    // error ends the stream; request_sent follows ForwardResponseError semantics.
+    ForwardResponseError error = 5;
   }
 }
 

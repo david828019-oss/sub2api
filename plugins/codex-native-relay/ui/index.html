@@ -10,7 +10,7 @@
   <main class="page">
     <header>
       <h1>Codex Native Relay</h1>
-      <p class="muted">把 OpenAI OAuth 账号的 Codex Responses 请求交给本机 <code>codex relay</code>，由 Codex CLI 原生客户端发往上游。</p>
+      <p class="muted">把 OpenAI OAuth 账号的 Codex 后端请求（Responses、WebSocket、models、images、files）交给本机 <code>codex relay</code>，由 Codex CLI 原生客户端发往上游。</p>
     </header>
 
     <form id="config-form" autocomplete="off">
@@ -30,7 +30,7 @@
         </select>
       </label>
       <label>
-        <span>非 Codex Responses 请求</span>
+        <span>relay 不支持的其他请求</span>
         <select id="unmatched_requests">
           <option value="direct">direct：插件直连上游（沿用账号代理）</option>
           <option value="reject">reject：直接拒绝</option>

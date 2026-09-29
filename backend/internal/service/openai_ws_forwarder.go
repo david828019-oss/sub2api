@@ -276,6 +276,7 @@ func (s *OpenAIGatewayService) getOpenAIWSConnPool() *openAIWSConnPool {
 	s.openaiWSPoolOnce.Do(func() {
 		if s.openaiWSPool == nil {
 			s.openaiWSPool = newOpenAIWSConnPool(s.cfg)
+			s.openaiWSPool.clientDialer = newPluginRoutingOpenAIWSDialer(s.openaiWSPool.clientDialer, s.currentPluginManager)
 		}
 	})
 	return s.openaiWSPool
@@ -287,7 +288,7 @@ func (s *OpenAIGatewayService) getOpenAIWSPassthroughDialer() openAIWSClientDial
 	}
 	s.openaiWSPassthroughDialerOnce.Do(func() {
 		if s.openaiWSPassthroughDialer == nil {
-			s.openaiWSPassthroughDialer = newDefaultOpenAIWSClientDialer()
+			s.openaiWSPassthroughDialer = newPluginRoutingOpenAIWSDialer(newDefaultOpenAIWSClientDialer(), s.currentPluginManager)
 		}
 	})
 	return s.openaiWSPassthroughDialer

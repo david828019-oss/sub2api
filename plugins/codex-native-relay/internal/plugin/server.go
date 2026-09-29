@@ -23,7 +23,7 @@ const (
 )
 
 // Version 由构建时 -ldflags 注入，必须与清单版本一致。
-var Version = "0.1.0"
+var Version = "0.2.0"
 
 // Server 实现 pluginv1.TransportPluginServer。
 type Server struct {
@@ -44,7 +44,7 @@ func (s *Server) GetInfo(context.Context, *pluginv1.GetInfoRequest) (*pluginv1.G
 		PluginVersion:       Version,
 		ProtocolVersion:     pluginv1.ProtocolVersion,
 		TransportApiVersion: pluginv1.TransportAPIVersion,
-		Capabilities:        []string{capability},
+		Capabilities:        []string{capability, pluginv1.OpenAIOAuthWebSocketCapability},
 	}, nil
 }
 
@@ -57,7 +57,7 @@ func (s *Server) Health(context.Context, *pluginv1.HealthRequest) (*pluginv1.Hea
 	})
 	message := "ready"
 	if !cfg.Ready() {
-		message = "relay_secret 未配置，Codex Responses 请求会失败"
+		message = "relay_secret 未配置，发往 codex relay 的请求会失败"
 	}
 	return &pluginv1.HealthResponse{Healthy: true, Message: message, StatusJson: string(status)}, nil
 }

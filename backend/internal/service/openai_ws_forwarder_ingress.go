@@ -115,8 +115,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
+	// 命中插件的账号：插件实现了 WebSocket 能力且账号启用了 WSv2 时，上游 WS 由插件建立
+	// （见 pluginRoutingOpenAIWSDialer）；否则改走 HTTP Bridge，经插件的 HTTP 转发。
+	pluginWSRoute := OpenAIOAuthWebSocketDirect
+	if s.pluginManager != nil {
+		pluginWSRoute = s.pluginManager.OpenAIOAuthWebSocketRouteFor(account)
+	}
 	forceHTTPBridge := account.Platform == PlatformGrok ||
-		(s.pluginManager != nil && s.pluginManager.ShouldRouteOpenAIOAuth(account))
+		pluginWSRoute == OpenAIOAuthWebSocketHTTPOnly ||
+		(pluginWSRoute == OpenAIOAuthWebSocketViaPlugin && wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2)
 	modeRouterV2Enabled := s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled
 	ingressMode := OpenAIWSIngressModeCtxPool
 	if modeRouterV2Enabled && !forceHTTPBridge {

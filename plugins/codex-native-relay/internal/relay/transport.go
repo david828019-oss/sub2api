@@ -1,4 +1,5 @@
-// Package relay 把 OpenAI OAuth 账号的 Codex Responses 请求转发给本机 `codex relay`，
+// Package relay 把 OpenAI OAuth 账号发往 ChatGPT Codex 后端的请求（Responses、compact、
+// models、images、files 以及 Responses WebSocket）转发给本机 `codex relay`，
 // 其余请求按配置直连上游或拒绝。
 package relay
 
@@ -24,7 +25,8 @@ const (
 	// ErrorHeader 是 relay 自身错误的标记：relay 表示未发出上游请求，upstream 表示可能已发出。
 	ErrorHeader = "X-Codex-Relay-Error"
 
-	codexResponsesPath  = "/backend-api/codex/responses"
+	codexPrefix         = "/backend-api/codex"
+	filesPrefix         = "/backend-api/files"
 	maxDirectTransports = 32
 	maxErrorBodyBytes   = 4 * 1024
 )
@@ -33,6 +35,15 @@ const (
 var hopByHopHeaders = []string{
 	"Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Proxy-Connection",
 	"Te", "Trailer", "Transfer-Encoding", "Upgrade", "Host", "Content-Length",
+}
+
+// codexEndpoints 是 relay 能以 Codex 原生方式处理的 /backend-api/codex 下的端点。
+var codexEndpoints = map[string]bool{
+	"/responses":          true,
+	"/responses/compact":  true,
+	"/models":             true,
+	"/images/generations": true,
+	"/images/edits":       true,
 }
 
 // credentialHeaders 只在 passthrough 模式下交给 relay。
@@ -60,16 +71,18 @@ type Request struct {
 
 // Transport 持有当前配置与可复用的连接池；配置切换是原子的。
 type Transport struct {
-	mu     sync.RWMutex
-	cfg    pluginconfig.Config
-	relay  *http.Transport
-	direct map[string]*http.Transport
+	mu    sync.RWMutex
+	cfg   pluginconfig.Config
+	relay *http.Transport
+	// relayWS 是 WebSocket 握手专用客户端：WebSocket 只能跑在 HTTP/1.1 上。
+	relayWS *http.Client
+	direct  map[string]*http.Transport
 }
 
 // New 使用默认配置创建 Transport。
 func New() *Transport {
 	cfg := pluginconfig.Default()
-	return &Transport{cfg: cfg, relay: newRelayTransport(cfg), direct: map[string]*http.Transport{}}
+	return &Transport{cfg: cfg, relay: newRelayTransport(cfg), relayWS: newRelayWebSocketClient(cfg), direct: map[string]*http.Transport{}}
 }
 
 // Config 返回当前生效的配置副本。
@@ -83,12 +96,15 @@ func (t *Transport) Config() pluginconfig.Config {
 func (t *Transport) Apply(cfg pluginconfig.Config) {
 	t.mu.Lock()
 	oldRelay := t.relay
+	oldRelayWS := t.relayWS
 	oldDirect := t.direct
 	t.cfg = cfg
 	t.relay = newRelayTransport(cfg)
+	t.relayWS = newRelayWebSocketClient(cfg)
 	t.direct = map[string]*http.Transport{}
 	t.mu.Unlock()
 	oldRelay.CloseIdleConnections()
+	oldRelayWS.CloseIdleConnections()
 	for _, transport := range oldDirect {
 		transport.CloseIdleConnections()
 	}
@@ -99,13 +115,15 @@ func (t *Transport) Close() {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	t.relay.CloseIdleConnections()
+	t.relayWS.CloseIdleConnections()
 	for _, transport := range t.direct {
 		transport.CloseIdleConnections()
 	}
 }
 
-// IsCodexResponses 判断请求是否为 ChatGPT Codex Responses（含 /compact）端点。
-func IsCodexResponses(target *url.URL) bool {
+// IsRelayed 判断请求是否应交给 codex relay：ChatGPT 域名下的 Codex Responses（含
+// /compact）、models、images 端点，以及 /backend-api/files 文件接口。
+func IsRelayed(target *url.URL) bool {
 	if target == nil {
 		return false
 	}
@@ -114,10 +132,28 @@ func IsCodexResponses(target *url.URL) bool {
 		return false
 	}
 	path := strings.TrimRight(target.Path, "/")
-	return path == codexResponsesPath || path == codexResponsesPath+"/compact"
+	if rest, ok := strings.CutPrefix(path, codexPrefix); ok {
+		return codexEndpoints[rest]
+	}
+	if rest, ok := strings.CutPrefix(path, filesPrefix); ok {
+		return rest == "" || strings.HasPrefix(rest, "/")
+	}
+	return false
 }
 
-// RoundTrip 发送请求：Codex Responses 走 relay，其余按 unmatched_requests 处理。
+// IsRelayedWebSocket 判断是否为 ChatGPT Codex Responses WebSocket 地址。
+func IsRelayedWebSocket(target *url.URL) bool {
+	if target == nil || (target.Scheme != "wss" && target.Scheme != "ws") {
+		return false
+	}
+	host := strings.ToLower(target.Hostname())
+	if host != "chatgpt.com" && !strings.HasSuffix(host, ".chatgpt.com") {
+		return false
+	}
+	return strings.TrimRight(target.Path, "/") == codexPrefix+"/responses"
+}
+
+// RoundTrip 发送请求：Codex 后端请求走 relay，其余按 unmatched_requests 处理。
 func (t *Transport) RoundTrip(ctx context.Context, request Request) (*http.Response, error) {
 	target, err := url.Parse(request.URL)
 	if err != nil || target.Scheme == "" || target.Host == "" {
@@ -128,14 +164,14 @@ func (t *Transport) RoundTrip(ctx context.Context, request Request) (*http.Respo
 	relayTransport := t.relay
 	t.mu.RUnlock()
 
-	if IsCodexResponses(target) {
+	if IsRelayed(target) {
 		if !cfg.Ready() {
 			return nil, &Error{Code: "CODEX_RELAY_NOT_CONFIGURED", Message: "插件尚未配置 relay_secret"}
 		}
 		return t.sendToRelay(ctx, cfg, relayTransport, target, request)
 	}
 	if cfg.UnmatchedRequests == pluginconfig.UnmatchedReject {
-		return nil, &Error{Code: "CODEX_RELAY_UNMATCHED", Message: "该请求不是 Codex Responses 请求，已按配置拒绝"}
+		return nil, &Error{Code: "CODEX_RELAY_UNMATCHED", Message: "该请求不是 relay 支持的 Codex 后端请求，已按配置拒绝"}
 	}
 	transport, err := t.directTransport(cfg, request.ProxyURL)
 	if err != nil {
@@ -145,16 +181,14 @@ func (t *Transport) RoundTrip(ctx context.Context, request Request) (*http.Respo
 }
 
 func (t *Transport) sendToRelay(ctx context.Context, cfg pluginconfig.Config, transport *http.Transport, target *url.URL, request Request) (*http.Response, error) {
-	relayURL, _ := url.Parse(cfg.RelayURL)
-	relayURL.Path = strings.TrimRight(target.Path, "/")
-	var dropped []string
-	if cfg.CredentialMode == pluginconfig.CredentialModeCodex {
-		dropped = credentialHeaders
+	relayURL := relayTarget(cfg, target)
+	headers := relayHeaders(cfg, request.Headers)
+	method := request.Method
+	if method == "" {
+		method = http.MethodPost
 	}
-	headers := cloneHeaders(request.Headers, dropped)
-	headers.Set(SecretHeader, cfg.RelaySecret)
 
-	response, err := send(ctx, transport, http.MethodPost, relayURL, headers, request)
+	response, err := send(ctx, transport, method, relayURL, headers, request)
 	if err != nil {
 		return nil, err
 	}
@@ -168,6 +202,25 @@ func (t *Transport) sendToRelay(ctx context.Context, cfg pluginconfig.Config, tr
 		Message:     fmt.Sprintf("codex relay 返回 %d: %s", response.StatusCode, message),
 		RequestSent: stage != "relay",
 	}
+}
+
+// relayTarget 把上游地址映射到 relay：保留路径与查询串，替换协议和主机。
+func relayTarget(cfg pluginconfig.Config, target *url.URL) *url.URL {
+	relayURL, _ := url.Parse(cfg.RelayURL)
+	relayURL.Path = strings.TrimRight(target.Path, "/")
+	relayURL.RawQuery = target.RawQuery
+	return relayURL
+}
+
+// relayHeaders 复制宿主请求头：codex 模式下去掉账号凭据（由 relay 注入本机 Codex 登录），并附上共享密钥。
+func relayHeaders(cfg pluginconfig.Config, source http.Header) http.Header {
+	var dropped []string
+	if cfg.CredentialMode == pluginconfig.CredentialModeCodex {
+		dropped = credentialHeaders
+	}
+	headers := cloneHeaders(source, dropped)
+	headers.Set(SecretHeader, cfg.RelaySecret)
+	return headers
 }
 
 func send(ctx context.Context, transport *http.Transport, method string, target *url.URL, headers http.Header, request Request) (*http.Response, error) {
@@ -247,6 +300,13 @@ func newRelayTransport(cfg pluginconfig.Config) *http.Transport {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: time.Duration(cfg.ResponseHeaderTimeoutSeconds) * time.Second,
 	}
+}
+
+// newRelayWebSocketClient 复用 relay 连接参数，但关闭 HTTP/2，WebSocket 握手只能走 HTTP/1.1。
+func newRelayWebSocketClient(cfg pluginconfig.Config) *http.Client {
+	transport := newRelayTransport(cfg)
+	transport.ForceAttemptHTTP2 = false
+	return &http.Client{Transport: transport}
 }
 
 func cloneHeaders(source http.Header, dropped []string) http.Header {
