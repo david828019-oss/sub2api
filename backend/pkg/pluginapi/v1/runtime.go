@@ -22,6 +22,10 @@ const (
 	// （状态/调度/限流/暂停原因等），供插件排除不可调度账号。纯加法变更，v1
 	// 插件忽略新字段即可继续工作。
 	HostServiceAPIVersion = 2
+	// OpenAIOAuthWebSocketCapability 出现在 GetInfo.capabilities 中时，表示插件实现了
+	// ForwardWebSocket，宿主可以把命中插件的 OpenAI OAuth 账号的上游 WebSocket 交给插件。
+	// 未声明该能力的插件保持原行为：宿主对这些账号只走 HTTP（WS 入口使用 HTTP Bridge）。
+	OpenAIOAuthWebSocketCapability = "openai.oauth.outbound_websocket.v1"
 	// TransportPluginName 是 go-plugin 中注册的唯一能力名称。
 	TransportPluginName = "oauth_transport"
 )

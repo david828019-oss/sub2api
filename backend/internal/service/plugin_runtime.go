@@ -29,10 +29,12 @@ type pluginRuntime struct {
 	installation *PluginInstallation
 	client       *hcplugin.Client
 	api          pluginv1.TransportPluginClient
-	inFlight     atomic.Int64
-	draining     atomic.Bool
-	done         chan struct{}
-	doneOnce     sync.Once
+	// supportsWebSocket 表示插件在 GetInfo 中声明了 OpenAIOAuthWebSocketCapability。
+	supportsWebSocket bool
+	inFlight          atomic.Int64
+	draining          atomic.Bool
+	done              chan struct{}
+	doneOnce          sync.Once
 }
 
 func startPluginRuntime(ctx context.Context, installation *PluginInstallation, startTimeout time.Duration, socketDir string, hostServices pluginv1.HostServiceServer) (*pluginRuntime, error) {
@@ -93,6 +95,11 @@ func startPluginRuntime(ctx context.Context, installation *PluginInstallation, s
 		info.ProtocolVersion != pluginv1.ProtocolVersion || info.TransportApiVersion != pluginv1.TransportAPIVersion {
 		runtime.kill()
 		return nil, errors.New("插件运行时信息与已校验清单不一致")
+	}
+	for _, capability := range info.Capabilities {
+		if capability == pluginv1.OpenAIOAuthWebSocketCapability {
+			runtime.supportsWebSocket = true
+		}
 	}
 	health, err := api.Health(infoCtx, &pluginv1.HealthRequest{})
 	if err != nil || !health.Healthy {

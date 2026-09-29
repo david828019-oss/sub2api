@@ -978,8 +978,70 @@ func (m *PluginManager) RoundTripOpenAIOAuth(ctx context.Context, request *http.
 	return response, true, nil
 }
 
+// OpenAIOAuthWebSocketRoute 描述命中插件的账号的上游 WebSocket 应如何处理。
+type OpenAIOAuthWebSocketRoute int
+
+const (
+	// OpenAIOAuthWebSocketDirect：账号不经插件，按原逻辑直连。
+	OpenAIOAuthWebSocketDirect OpenAIOAuthWebSocketRoute = iota
+	// OpenAIOAuthWebSocketViaPlugin：插件实现了 ForwardWebSocket，上游 WS 交给插件。
+	OpenAIOAuthWebSocketViaPlugin
+	// OpenAIOAuthWebSocketHTTPOnly：账号命中插件但插件只支持 HTTP，调用方需改走 HTTP。
+	OpenAIOAuthWebSocketHTTPOnly
+)
+
+// OpenAIOAuthWebSocketRouteFor 判断账号的上游 WebSocket 走向。插件不可用时按 HTTPOnly
+// 处理，由 HTTP 路径返回插件不可用的错误，绝不绕过插件直连。
+func (m *PluginManager) OpenAIOAuthWebSocketRouteFor(account *Account) OpenAIOAuthWebSocketRoute {
+	if !m.ShouldRouteOpenAIOAuth(account) {
+		return OpenAIOAuthWebSocketDirect
+	}
+	route := m.route.Load()
+	if route == nil || route.runtime == nil || !route.runtime.supportsWebSocket {
+		return OpenAIOAuthWebSocketHTTPOnly
+	}
+	return OpenAIOAuthWebSocketViaPlugin
+}
+
+// DialOpenAIOAuthWebSocket 通过插件打开账号的上游 WebSocket。handled 为 false 表示账号
+// 不经插件，调用方应按原逻辑直连。
+func (m *PluginManager) DialOpenAIOAuthWebSocket(ctx context.Context, wsURL string, headers http.Header, proxyURL string, account *Account) (conn openAIWSClientConn, status int, respHeaders http.Header, handled bool, err error) {
+	switch m.OpenAIOAuthWebSocketRouteFor(account) {
+	case OpenAIOAuthWebSocketDirect:
+		return nil, 0, nil, false, nil
+	case OpenAIOAuthWebSocketHTTPOnly:
+		return nil, 0, nil, true, errors.New("OpenAI OAuth 插件不支持 WebSocket")
+	}
+	route := m.route.Load()
+	if route == nil || route.runtime == nil {
+		return nil, 0, nil, true, errors.New("OpenAI OAuth 插件不可用")
+	}
+	if route.runtime.client.Exited() {
+		runtimeErr := errors.New("OpenAI OAuth 插件进程已退出")
+		if stateErr := m.markRuntimeUnavailable(route, runtimeErr.Error()); stateErr != nil {
+			return nil, 0, nil, true, errors.Join(runtimeErr, stateErr)
+		}
+		return nil, 0, nil, true, runtimeErr
+	}
+	if !route.runtime.beginRequest() {
+		return nil, 0, nil, true, errors.New("OpenAI OAuth 插件正在停止")
+	}
+	conn, status, respHeaders, err = route.runtime.dialWebSocket(ctx, wsURL, headers, proxyURL, account)
+	if err != nil {
+		route.runtime.finishRequest()
+		if route.runtime.client.Exited() {
+			if stateErr := m.markRuntimeUnavailable(route, err.Error()); stateErr != nil {
+				err = errors.Join(err, stateErr)
+			}
+		}
+		return nil, status, respHeaders, true, err
+	}
+	return conn, status, respHeaders, true, nil
+}
+
 // ShouldRouteOpenAIOAuth 判断该账号是否命中当前 OpenAI OAuth 插件绑定。
-// WebSocket 入口用它把命中的账号切换到 HTTP Bridge，避免绕过 v1 HTTP 插件协议。
+// 插件未实现 WebSocket 能力时，WebSocket 入口据此把命中的账号切换到 HTTP Bridge，
+// 避免绕过插件直连上游。
 func (m *PluginManager) ShouldRouteOpenAIOAuth(account *Account) bool {
 	if m == nil || account == nil || account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {
 		return false

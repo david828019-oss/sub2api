@@ -26,9 +26,17 @@
 - 仅匹配 `platform=openai` 且 `account_type=oauth` 的上游 HTTP 请求。
 - API Key 账号、其他 provider、OAuth 登录与 Token 刷新流程不进入插件。
 - 插件建立真实的上游 HTTP/TLS 连接并返回原始 HTTP 响应。
-- 命中插件的 OAuth WebSocket 账号会使用 Sub2API 现有 HTTP Bridge，不直接建立上游 WebSocket，避免绕过 v1 HTTP 插件协议。
+- 命中插件的 OAuth 账号的上游 WebSocket：插件在 `GetInfo.capabilities` 中声明 `openai.oauth.outbound_websocket.v1` 并实现 `ForwardWebSocket` 时，宿主把上游 WebSocket（连接池和 passthrough 两种模式）交给插件建立；未声明时，WS 入口改用现有 HTTP Bridge、HTTP 入口不选 WS 上游，任何情况下都不会绕过插件直连。
 - Sub2API 继续负责响应状态处理、SSE 解析、错误映射、用量统计、计费和下游输出。
 - 灰度比例以账号 ID 稳定分桶，未命中的 OAuth 账号继续使用原有内置路径。
+
+## 可选 WebSocket 转发（ForwardWebSocket）
+
+`ForwardWebSocket` 是叠加在传输契约上的可选 RPC，传输契约版本不变。宿主只在插件的 `GetInfo.capabilities` 包含 `openai.oauth.outbound_websocket.v1` 时调用它，旧插件无需任何改动。
+
+- 宿主首帧发送 `open`（上游 `wss://` 地址、请求头、账号代理和账号信息）。
+- 插件回 `opened`（握手成功，带上游握手响应头）、`rejected`（上游用普通 HTTP 响应拒绝握手，带状态码、响应头和响应体，宿主按原有握手失败逻辑处理）或 `error`（`request_sent` 语义同 `ForwardResponseError`）。
+- 之后双方互发 `message`（文本或二进制帧），任一方发送 `close` 或结束流即关闭连接。Ping/Pong 由各自一侧的 WebSocket 实现处理，不经过 gRPC 流。
 
 ## 宿主服务（HostService）
 

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Native Relay</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <main class="page">
+    <header>
+      <h1>Codex Native Relay</h1>
+      <p class="muted">把 OpenAI OAuth 账号的 Codex 后端请求（Responses、WebSocket、models、images、files）交给本机 <code>codex relay</code>，由 Codex CLI 原生客户端发往上游。</p>
+    </header>
+
+    <form id="config-form" autocomplete="off">
+      <label>
+        <span>Relay 地址</span>
+        <input id="relay_url" type="url" placeholder="http://127.0.0.1:8788" required>
+      </label>
+      <label>
+        <span>共享密钥（与 relay 的 CODEX_RELAY_SECRET 一致）</span>
+        <input id="relay_secret" type="password" minlength="16" placeholder="至少 16 个字符">
+      </label>
+      <label>
+        <span>凭据模式（与 relay 的 --auth 一致）</span>
+        <select id="credential_mode">
+          <option value="codex">codex：使用 relay 本机 codex login 的账号</option>
+          <option value="passthrough">passthrough：使用 Sub2API 账号 Token，经 Codex 原生客户端发送</option>
+        </select>
+      </label>
+      <label>
+        <span>relay 不支持的其他请求</span>
+        <select id="unmatched_requests">
+          <option value="direct">direct：插件直连上游（沿用账号代理）</option>
+          <option value="reject">reject：直接拒绝</option>
+        </select>
+      </label>
+      <div class="row">
+        <label>
+          <span>Relay 响应头超时（秒）</span>
+          <input id="response_header_timeout_seconds" type="number" min="1" max="3600">
+        </label>
+        <label>
+          <span>直连响应头超时（秒）</span>
+          <input id="direct_response_header_timeout_seconds" type="number" min="1" max="3600">
+        </label>
+      </div>
+      <label class="check">
+        <input id="allow_remote_relay" type="checkbox">
+        <span>允许非本机 relay 地址（请使用 https）</span>
+      </label>
+
+      <div class="actions">
+        <button id="save" type="submit">保存</button>
+        <button id="test" type="button" class="secondary">保存并测试</button>
+        <span id="dirty" class="muted" hidden>有未保存的修改</span>
+      </div>
+    </form>
+
+    <section id="result" class="result" hidden></section>
+  </main>
+  <script src="assets/bridge-v1.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
